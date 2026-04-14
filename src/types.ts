@@ -40,8 +40,10 @@ export interface CalibrationProfile {
 
 export interface ProcessingOptions {
   enhance: boolean;
-  autoLevel: boolean;
+  autoLevel: boolean;      // now targets -14 LUFS (two-pass)
   detectFillers: boolean;
+  denoise: boolean;        // RNNoise-WASM neural speech denoise (lazy-loaded)
+  truncateSilence: boolean; // shrinks gaps >500 ms — off by default
 }
 
 export interface FillerMarker {

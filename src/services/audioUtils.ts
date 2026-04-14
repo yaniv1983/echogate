@@ -1,4 +1,7 @@
 import type { FillerMarker } from '../types';
+import { integratedLufs } from './lufs';
+import { truncateSilence as truncateSilenceImpl } from './silence';
+import { denoiseBuffer } from './denoise';
 
 // ---------- small helpers kept for the UI / export paths ----------
 export const decodeAudio = async (
@@ -41,77 +44,180 @@ const dbToGain = (db: number): number => Math.pow(10, db / 20);
 // imports of processAudioGatingAsync from audioUtils.ts keep working.
 export { processAudioGatingAsync } from './gatingClient';
 
-// --- DSP CHAIN FOR "PROCESSED" EXPORT ---
-export const applyProcessingChain = async (
+// Internal: run gate-curve + Enhance chain on a buffer. No loudness stage.
+// Returns a new AudioBuffer at the same rate/length as input.
+const renderEnhanceChain = async (
   buffer: AudioBuffer,
   gainCurve: Float32Array | null,
   enhance: boolean,
-  autoLevel: boolean,
+  makeupDb: number,
+  limit: boolean,
 ): Promise<AudioBuffer> => {
-  const offlineCtx = new OfflineAudioContext(1, buffer.length, buffer.sampleRate);
-  const source = offlineCtx.createBufferSource();
+  const ctx = new OfflineAudioContext(
+    buffer.numberOfChannels,
+    buffer.length,
+    buffer.sampleRate,
+  );
+  const source = ctx.createBufferSource();
   source.buffer = buffer;
-  let lastNode: AudioNode = source;
+  let last: AudioNode = source;
 
   if (gainCurve) {
-    const gateGain = offlineCtx.createGain();
-    gateGain.gain.setValueCurveAtTime(gainCurve, 0, buffer.duration);
-    lastNode.connect(gateGain);
-    lastNode = gateGain;
+    const g = ctx.createGain();
+    g.gain.setValueCurveAtTime(gainCurve, 0, buffer.duration);
+    last.connect(g);
+    last = g;
   }
 
   if (enhance) {
-    const hpf = offlineCtx.createBiquadFilter();
+    // HPF 100 Hz (rumble)
+    const hpf = ctx.createBiquadFilter();
     hpf.type = 'highpass';
-    hpf.frequency.value = 80;
+    hpf.frequency.value = 100;
     hpf.Q.value = 0.7;
-    lastNode.connect(hpf);
-    lastNode = hpf;
-
-    const presence = offlineCtx.createBiquadFilter();
+    last.connect(hpf);
+    last = hpf;
+    // Presence +3 @ 3.5 kHz
+    const presence = ctx.createBiquadFilter();
     presence.type = 'peaking';
     presence.frequency.value = 3500;
-    presence.gain.value = 2.5;
+    presence.gain.value = 3;
     presence.Q.value = 1.0;
-    lastNode.connect(presence);
-    lastNode = presence;
-
-    const comp = offlineCtx.createDynamicsCompressor();
+    last.connect(presence);
+    last = presence;
+    // Air +2 @ 6 kHz
+    const air = ctx.createBiquadFilter();
+    air.type = 'peaking';
+    air.frequency.value = 6000;
+    air.gain.value = 2;
+    air.Q.value = 0.9;
+    last.connect(air);
+    last = air;
+    // De-ess -1.5 @ 8 kHz
+    const deess = ctx.createBiquadFilter();
+    deess.type = 'peaking';
+    deess.frequency.value = 8000;
+    deess.gain.value = -1.5;
+    deess.Q.value = 2.5;
+    last.connect(deess);
+    last = deess;
+    // R-Vox-style compand approximation
+    const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -24;
     comp.knee.value = 30;
     comp.ratio.value = 3;
     comp.attack.value = 0.003;
     comp.release.value = 0.25;
-    lastNode.connect(comp);
-    lastNode = comp;
+    last.connect(comp);
+    last = comp;
   }
 
-  if (autoLevel) {
-    const data = buffer.getChannelData(0);
-    const rms = calculateRMS(data);
-    const currentDb = gainToDb(rms);
-    const targetDb = -16;
-    let gainNeeded = targetDb - currentDb;
-    gainNeeded = Math.max(-5, Math.min(gainNeeded, 15));
+  if (makeupDb !== 0) {
+    const g = ctx.createGain();
+    g.gain.value = dbToGain(makeupDb);
+    last.connect(g);
+    last = g;
+  }
 
-    const makeupGain = offlineCtx.createGain();
-    makeupGain.gain.value = dbToGain(gainNeeded);
-    lastNode.connect(makeupGain);
-    lastNode = makeupGain;
-
-    const limiter = offlineCtx.createDynamicsCompressor();
+  if (limit) {
+    const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -1.0;
     limiter.knee.value = 0;
     limiter.ratio.value = 20;
     limiter.attack.value = 0.001;
     limiter.release.value = 0.1;
-    lastNode.connect(limiter);
-    lastNode = limiter;
+    last.connect(limiter);
+    last = limiter;
   }
 
-  lastNode.connect(offlineCtx.destination);
+  last.connect(ctx.destination);
   source.start(0);
-  return await offlineCtx.startRendering();
+  return await ctx.startRendering();
+};
+
+// Public entry: full export chain with optional RNNoise denoise + BS.1770
+// two-pass auto-level @ -14 LUFS + optional silence truncation.
+export interface ChainOptions {
+  enhance: boolean;
+  autoLevel: boolean;
+  denoise: boolean;
+  truncateSilence: boolean;
+  onProgress?: (stage: string, pct: number) => void;
+}
+
+export const applyProcessingChain = async (
+  buffer: AudioBuffer,
+  gainCurve: Float32Array | null,
+  optsOrEnhance: ChainOptions | boolean,
+  autoLevelLegacy?: boolean,
+): Promise<AudioBuffer> => {
+  // Back-compat: old signature applyProcessingChain(buf, curve, enhance, autoLevel)
+  const opts: ChainOptions =
+    typeof optsOrEnhance === 'boolean'
+      ? {
+          enhance: optsOrEnhance,
+          autoLevel: !!autoLevelLegacy,
+          denoise: false,
+          truncateSilence: false,
+        }
+      : optsOrEnhance;
+
+  const progress = (stage: string, pct: number) =>
+    opts.onProgress && opts.onProgress(stage, pct);
+
+  let working = buffer;
+
+  // 1. Optional RNNoise denoise (pre-everything, so gate + EQ see clean signal).
+  if (opts.denoise) {
+    progress('Neural denoise (RNNoise)...', 5);
+    try {
+      working = await denoiseBuffer(working);
+    } catch (e) {
+      console.warn('RNNoise unavailable — skipping denoise step.', e);
+    }
+  }
+
+  // 2. First pass: gate + enhance, no makeup, no limiter — so we can measure
+  //    clean integrated loudness of the post-EQ signal.
+  progress('Enhance chain...', 30);
+  const firstPass = await renderEnhanceChain(
+    working,
+    gainCurve,
+    opts.enhance,
+    0,
+    false,
+  );
+
+  // 3. Auto-level: measure LUFS and compute makeup gain to -14 LUFS.
+  let finalBuf = firstPass;
+  if (opts.autoLevel) {
+    progress('Measuring loudness (LUFS)...', 55);
+    const lufs = integratedLufs(firstPass);
+    const targetLufs = -14;
+    let makeup = targetLufs - lufs;
+    // clamp to avoid absurd boosts of near-silent tracks
+    makeup = Math.max(-6, Math.min(makeup, 18));
+    progress('Applying -14 LUFS + limiter...', 70);
+    finalBuf = await renderEnhanceChain(working, gainCurve, opts.enhance, makeup, true);
+  } else if (opts.enhance) {
+    // Enhance without auto-level still benefits from the safety limiter.
+    progress('Applying limiter...', 70);
+    finalBuf = await renderEnhanceChain(working, gainCurve, opts.enhance, 0, true);
+  }
+
+  // 4. Optional silence truncation — changes duration, so gated behind a
+  //    user flag (off by default to preserve video sync).
+  if (opts.truncateSilence) {
+    progress('Truncating silences...', 90);
+    finalBuf = truncateSilenceImpl(finalBuf, {
+      thresholdDb: -50,
+      maxSilenceMs: 500,
+      fadeMs: 5,
+    });
+  }
+
+  progress('Done', 100);
+  return finalBuf;
 };
 
 // ---------- WAV writer + filler-marker support ----------

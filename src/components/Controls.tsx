@@ -65,6 +65,8 @@ const Controls: React.FC<ControlsProps> = ({
     enhance: true,
     autoLevel: true,
     detectFillers: false,
+    denoise: false,
+    truncateSilence: false,
   });
 
   return (
@@ -181,7 +183,35 @@ const Controls: React.FC<ControlsProps> = ({
                       }
                       className="rounded bg-slate-700 border-slate-600 accent-cyan-500"
                     />
-                    Auto-Level (-16 LUFS)
+                    Auto-Level (-14 LUFS, broadcast)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300 mb-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={exportOptions.denoise}
+                      onChange={(e) =>
+                        setExportOptions({
+                          ...exportOptions,
+                          denoise: e.target.checked,
+                        })
+                      }
+                      className="rounded bg-slate-700 border-slate-600 accent-cyan-500"
+                    />
+                    Neural Denoise (RNNoise)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300 mb-1 cursor-pointer" title="Shrinks quiet gaps >500 ms. Off by default — enabling it changes timing so video sync breaks.">
+                    <input
+                      type="checkbox"
+                      checked={exportOptions.truncateSilence}
+                      onChange={(e) =>
+                        setExportOptions({
+                          ...exportOptions,
+                          truncateSilence: e.target.checked,
+                        })
+                      }
+                      className="rounded bg-slate-700 border-slate-600 accent-cyan-500"
+                    />
+                    Truncate Silences (breaks video sync)
                   </label>
                   <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
                     <input

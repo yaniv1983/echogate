@@ -392,7 +392,13 @@ function App() {
             if (files.c && files.c.buffer && stats.gainCurveC) processTrack(files.c.buffer, stats.gainCurveC);
             
             const mixed = await offlineCtx.startRendering();
-            finalBuffer = await applyProcessingChain(mixed, null, enhance, autoLevel);
+            finalBuffer = await applyProcessingChain(mixed, null, {
+              enhance,
+              autoLevel,
+              denoise: options.denoise,
+              truncateSilence: options.truncateSilence,
+              onProgress: (stage, pct) => setExportProgressState({ message: stage, progress: 10 + pct * 0.6 }),
+            });
             blobName = `echogate-mix-mastered-${Date.now()}.wav`;
 
         } else {
@@ -405,7 +411,13 @@ function App() {
             if (type.startsWith('c') && files.c) { targetBuffer = files.c.buffer; targetCurve = stats.gainCurveC!; }
             
             if (targetBuffer && targetCurve) {
-                 finalBuffer = await applyProcessingChain(targetBuffer, targetCurve, enhance, autoLevel);
+                 finalBuffer = await applyProcessingChain(targetBuffer, targetCurve, {
+                    enhance,
+                    autoLevel,
+                    denoise: options.denoise,
+                    truncateSilence: options.truncateSilence,
+                    onProgress: (stage, pct) => setExportProgressState({ message: stage, progress: 10 + pct * 0.6 }),
+                 });
                  blobName = `echogate-${type}-${enhance ? 'enhanced' : 'raw'}.wav`;
             }
         }
