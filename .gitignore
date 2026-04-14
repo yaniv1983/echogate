@@ -1,0 +1,43 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Project-specific
+.env
+.env.local
+.env.server
+upload.tar.gz
+qa/node_modules
+qa/package-lock.json
+qa/fixtures
+qa/qa-report.json
+*.bak.*
+echogate-ai---podcast-assistant.zip
+
+# Server infrastructure (not app code)
+.user.ini
+.well-known
+404.html
+502.html
+

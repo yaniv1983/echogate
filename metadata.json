@@ -1,0 +1,5 @@
+{
+  "name": "EchoGate AI - Podcast Assistant",
+  "description": "A smart audio processing tool that analyzes dual-channel podcast recordings to automatically gate bleed and background noise using signal comparison and AI insights.",
+  "requestFramePermissions": []
+}
